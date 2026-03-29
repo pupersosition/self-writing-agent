@@ -116,8 +116,12 @@ process_issue() {
   branch_name="$(issue_branch_name "$issue_json")"
 
   latest_state="$(issue_current_state_name "$issue_id")"
-  if [[ -n "$latest_state" && "$latest_state" != "$LINEAR_TODO_STATE_NAME" && "$latest_state" != "$LINEAR_BACKLOG_STATE_NAME" ]]; then
-    echo "skipping:$identifier:state=$latest_state"
+  if [[ "$latest_state" != "$LINEAR_TODO_STATE_NAME" && "$latest_state" != "$LINEAR_BACKLOG_STATE_NAME" ]]; then
+    if [[ -z "$latest_state" ]]; then
+      echo "skipping:$identifier:state=unknown"
+    else
+      echo "skipping:$identifier:state=$latest_state"
+    fi
     return 0
   fi
 

@@ -3,10 +3,21 @@ codex_issue_prompt() {
   local identifier
   local title
   local description
+  local attachments_listing
 
   identifier="$(jq -r '.identifier' <<<"$issue_json")"
   title="$(jq -r '.title' <<<"$issue_json")"
   description="$(jq -r '.description // ""' <<<"$issue_json")"
+  attachments_listing="$(jq -r '
+    (.attachments.nodes // [])
+    | map(
+        "- " +
+        (if (.title // "") != "" then .title else "Attachment" end) +
+        (if (.subtitle // "") != "" then " — " + .subtitle else "" end) +
+        (if (.url // "") != "" then "\n  URL: " + .url else "" end)
+      )
+    | join("\n")
+  ' <<<"$issue_json")"
 
   cat <<EOF_PROMPT
 You are implementing Linear issue $identifier for the repository at $ROOT_DIR.
@@ -16,6 +27,18 @@ $title
 
 Issue description:
 $description
+
+EOF_PROMPT
+
+  if [[ -n "$attachments_listing" ]]; then
+    cat <<EOF_PROMPT
+Issue attachments:
+$attachments_listing
+
+EOF_PROMPT
+  fi
+
+  cat <<'EOF_PROMPT'
 
 Instructions:
 - Make the smallest correct change in this repository.

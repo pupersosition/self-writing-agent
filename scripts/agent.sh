@@ -177,6 +177,16 @@ issue_state_file() {
   printf '%s/%s.json\n' "$ISSUE_STATE_DIR" "$identifier"
 }
 
+clear_issue_context() {
+  local identifier="$1"
+  local state_file log_file
+
+  state_file="$(issue_state_file "$identifier")"
+  log_file="$LOG_DIR/${identifier}.log"
+
+  rm -f "$state_file" "$log_file"
+}
+
 save_issue_state() {
   local identifier="$1"
   local branch="$2"
@@ -431,6 +441,7 @@ process_issue() {
     return 1
   fi
 
+  clear_issue_context "$identifier"
   issue_update_state "$issue_id" "$IN_PROGRESS_STATE_ID"
   issue_add_comment "$issue_id" "Agent started implementing \`$identifier\`: $title"
   checkout_issue_branch "$branch_name"

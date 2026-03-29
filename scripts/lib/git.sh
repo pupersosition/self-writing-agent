@@ -88,16 +88,121 @@ commit_issue_changes() {
   git -C "$ROOT_DIR" commit -m "Implement $identifier: $title" >/dev/null
 }
 
+issue_log_file() {
+  local identifier="$1"
+  printf '%s/%s.log\n' "$LOG_DIR" "$identifier"
+}
+
+issue_summary_from_log() {
+  local identifier="$1"
+  local log_file
+
+  log_file="$(issue_log_file "$identifier")"
+  [[ -f "$log_file" ]] || return 0
+
+  perl -0ne '
+    my $text = $_;
+    if ($text =~ /(.*?)(\n\s*(?:\*\*)?verification(?:\*\*)?\b.*)/is) {
+      $text = $1;
+    }
+    $text =~ s/\A\s+//s;
+    $text =~ s/\s+\z//s;
+    print $text;
+  ' "$log_file"
+}
+
+issue_root_cause_from_description() {
+  local issue_json="$1"
+  local description
+  local extracted
+
+  description="$(jq -r '.description // ""' <<<"$issue_json")"
+  [[ -n "$description" ]] || return 0
+
+  extracted="$(
+    DESCRIPTION="$description" perl - <<'PERL'
+use strict;
+use warnings;
+
+my $text = $ENV{DESCRIPTION} // '';
+my @lines = split /\n/, $text;
+my $collect = 0;
+my @buffer;
+
+for my $line (@lines) {
+  my $trimmed = $line;
+  $trimmed =~ s/^\s+|\s+$//g;
+  my $norm = lc $trimmed;
+
+  if (!$collect) {
+    if ($norm =~ /^(?:#+\s*)?root cause\b/ || $norm =~ /^\*\*root cause\*\*/ || $norm =~ /^root cause\b/) {
+      $collect = 1;
+      $line =~ s/^(?:#+\s*)?root cause\b[:\s\-]*//i;
+      $line =~ s/^\*\*root cause\*\*[:\s\-]*//i;
+      $line =~ s/^root cause\b[:\s\-]*//i;
+      push @buffer, $line if $line =~ /\S/;
+    }
+    next;
+  }
+
+  last if $trimmed =~ /^#{1,6}\s+\S/;
+  last if $trimmed =~ /^\*\*[A-Za-z0-9 ,:-]+\*\*\s*$/;
+
+  push @buffer, $line;
+}
+
+while (@buffer && $buffer[-1] =~ /^\s*$/) {
+  pop @buffer;
+}
+
+if (@buffer) {
+  print join("\n", @buffer);
+}
+PERL
+  )"
+
+  [[ -n "$extracted" ]] || return 0
+  printf '%s\n' "$extracted"
+}
+
+build_pull_request_body() {
+  local issue_url="$1"
+  local summary_text="$2"
+  local root_cause_text="$3"
+  local body
+
+  body="## Summary"$'\n'
+
+  if [[ -n "$summary_text" ]]; then
+    body+="$summary_text"$'\n\n'
+  else
+    body+="Not provided."$'\n\n'
+  fi
+
+  if [[ -n "$root_cause_text" ]]; then
+    body+="## Root Cause"$'\n'"$root_cause_text"$'\n\n'
+  fi
+
+  body+="## Linear Issue"$'\n'"$issue_url"
+  printf '%s\n' "$body"
+}
+
 create_pull_request() {
   local issue_json="$1"
   local branch_name="$2"
   local identifier
   local title
+  local issue_url
+  local summary_text
+  local root_cause_text
   local body
 
   identifier="$(jq -r '.identifier' <<<"$issue_json")"
   title="$(jq -r '.title' <<<"$issue_json")"
-  body="$(printf 'Implements %s.\n\nLinear issue: %s' "$identifier" "$(jq -r '.url' <<<"$issue_json")")"
+  issue_url="$(jq -r '.url' <<<"$issue_json")"
+  summary_text="$(issue_summary_from_log "$identifier")"
+  root_cause_text="$(issue_root_cause_from_description "$issue_json")"
+  body="$(build_pull_request_body "$issue_url" "$summary_text" "$root_cause_text")"
 
   git -C "$ROOT_DIR" push -u "$GIT_REMOTE_NAME" "$branch_name" >/dev/null
   gh pr create \

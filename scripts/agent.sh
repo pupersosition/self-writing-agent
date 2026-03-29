@@ -41,6 +41,90 @@ source "$LIB_DIR/linear.sh"
 source "$LIB_DIR/git.sh"
 # shellcheck source=./lib/codex.sh
 source "$LIB_DIR/codex.sh"
+# shellcheck source=./lib/log.sh
+source "$LIB_DIR/log.sh"
+
+LAST_WAITING_IDENTIFIER=""
+LAST_IDLE_REASON=""
+
+log_issue_with_level() {
+  local level="$1"
+  local identifier="$2"
+  shift 2 || true
+  local message="$*"
+  local prefix=""
+
+  if [[ -n "$identifier" && "$identifier" != "unknown" ]]; then
+    prefix="[$identifier] "
+  fi
+
+  case "$level" in
+    info)
+      log_info "${prefix}${message}"
+      ;;
+    success)
+      log_success "${prefix}${message}"
+      ;;
+    warn)
+      log_warn "${prefix}${message}"
+      ;;
+    error)
+      log_error "${prefix}${message}"
+      ;;
+    *)
+      log_info "${prefix}${message}"
+      ;;
+  esac
+}
+
+log_issue_info() {
+  log_issue_with_level info "$@"
+}
+
+log_issue_success() {
+  log_issue_with_level success "$@"
+}
+
+log_issue_warn() {
+  log_issue_with_level warn "$@"
+}
+
+log_issue_error() {
+  log_issue_with_level error "$@"
+}
+
+remember_idle_notice() {
+  local reason="$1"
+  local message="$2"
+
+  if [[ "${LAST_IDLE_REASON:-}" == "$reason" ]]; then
+    return
+  fi
+
+  log_info "$message"
+  LAST_IDLE_REASON="$reason"
+}
+
+clear_idle_notice() {
+  LAST_IDLE_REASON=""
+}
+
+remember_waiting_issue() {
+  local identifier="$1"
+  shift || true
+  local message="${*:-Waiting for PR approval before marking Done.}"
+
+  if [[ "${LAST_WAITING_IDENTIFIER:-}" == "$identifier" ]]; then
+    return
+  fi
+
+  log_issue_info "$identifier" "$message"
+  LAST_WAITING_IDENTIFIER="$identifier"
+}
+
+clear_waiting_issue_state() {
+  LAST_WAITING_IDENTIFIER=""
+}
 
 sync_agent_state_after_merge() {
   local identifier="${1:-}"
@@ -58,7 +142,7 @@ sync_agent_state_after_merge() {
   fi
 
   AGENT_SOURCE_SYNC_STATUS="failed"
-  echo "Agent detected merged issue ${identifier:-unknown} but failed to sync latest source." >&2
+  log_issue_error "${identifier:-unknown}" "Agent detected merged issue but failed to sync latest source."
   return "$pull_status"
 }
 
@@ -67,17 +151,17 @@ restart_agent_after_merge() {
 
   case "${AGENT_SOURCE_SYNC_STATUS:-}" in
     updated)
-      echo "agent-updated:${identifier:-unknown}"
+      log_issue_success "${identifier:-unknown}" "Synced latest $GIT_BASE_BRANCH after merge."
       ;;
     current)
-      echo "agent-current:${identifier:-unknown}"
+      log_issue_info "${identifier:-unknown}" "Agent source already current after merge."
       ;;
   esac
 
   if [[ "$AGENT_COMMAND" == "run-forever" ]]; then
-    echo "Agent source synced after PR merge; restarting to load current code." >&2
+    log_info "Agent source synced after PR merge; restarting to load current code."
     exec "$AGENT_SCRIPT_PATH" "${AGENT_ORIGINAL_ARGS[@]}"
-    echo "Agent source synced after PR merge but restart failed." >&2
+    log_error "Agent source synced after PR merge but restart failed."
     return 1
   fi
 
@@ -99,7 +183,10 @@ reconcile_in_review_issue() {
   identifier="$(jq -r '.identifier' <<<"$issue_json")"
   issue_id="$(jq -r '.id' <<<"$issue_json")"
   saved_state="$(load_issue_state "$identifier" || true)"
-  [[ -n "$saved_state" ]] || return 1
+  if [[ -z "$saved_state" ]]; then
+    clear_waiting_issue_state
+    return 1
+  fi
 
   require_gh_auth
   pr_url="$(jq -r '.pr_url' <<<"$saved_state")"
@@ -110,21 +197,26 @@ reconcile_in_review_issue() {
   if [[ -n "$merged_at" ]] && pr_has_approval "$pr_number"; then
     if ! sync_agent_state_after_merge "$identifier"; then
       issue_add_comment "$issue_id" "PR approved and merged: $(jq -r '.url' <<<"$pr_data"). The agent could not sync the latest \`$GIT_BASE_BRANCH\`, so the issue remains \`$LINEAR_IN_REVIEW_STATE_NAME\` for follow-up."
+      log_issue_error "$identifier" "PR merged but syncing $GIT_BASE_BRANCH failed."
+      clear_waiting_issue_state
       return 1
     fi
 
     issue_add_comment "$issue_id" "PR approved and merged: $(jq -r '.url' <<<"$pr_data"). Agent synced the latest \`$GIT_BASE_BRANCH\` and is marking the issue \`Done\`."
     issue_update_state "$issue_id" "$DONE_STATE_ID"
+    log_issue_success "$identifier" "PR merged and issue marked \`$LINEAR_DONE_STATE_NAME\`."
 
     if ! restart_agent_after_merge "$identifier"; then
       issue_add_comment "$issue_id" "PR approved and merged, and the issue was marked \`Done\`, but the agent process failed to restart after syncing \`$GIT_BASE_BRANCH\`. Investigate the running process."
+      clear_waiting_issue_state
       return 1
     fi
 
+    clear_waiting_issue_state
     return 0
   fi
 
-  echo "waiting:$identifier"
+  remember_waiting_issue "$identifier" "PR awaiting approval before marking \`$LINEAR_DONE_STATE_NAME\`."
   return 1
 }
 
@@ -147,49 +239,61 @@ process_issue() {
   issue_url="$(jq -r '.url' <<<"$issue_json")"
   branch_name="$(issue_branch_name "$issue_json")"
 
+  clear_idle_notice
+  log_section "$identifier - $title"
+
   latest_state="$(issue_current_state_name "$issue_id")"
   if [[ "$latest_state" != "$LINEAR_TODO_STATE_NAME" && "$latest_state" != "$LINEAR_BACKLOG_STATE_NAME" ]]; then
     if [[ -z "$latest_state" ]]; then
-      echo "skipping:$identifier:state=unknown"
+      log_issue_warn "$identifier" "Skipping because Linear state is unknown."
     else
-      echo "skipping:$identifier:state=$latest_state"
+      log_issue_info "$identifier" "Skipping because state is '$latest_state'."
     fi
     return 0
   fi
 
   if ! preflight_for_issue; then
     issue_add_comment "$issue_id" "Agent could not start \`$identifier\` because the local git or GitHub CLI prerequisites are not satisfied."
+    log_issue_error "$identifier" "Preflight checks failed; prerequisites missing."
     return 1
   fi
 
   clear_issue_context "$identifier"
   issue_update_state "$issue_id" "$IN_PROGRESS_STATE_ID"
   issue_add_comment "$issue_id" "$(printf 'Agent started implementing `%s` on branch `%s` using model `%s`.\n\nTitle: %s\nIssue: %s' "$identifier" "$branch_name" "$CODEX_MODEL" "$title" "$issue_url")"
+  log_issue_info "$identifier" "Moved to \`$LINEAR_IN_PROGRESS_STATE_NAME\` on branch \`$branch_name\` using model $CODEX_MODEL."
   checkout_issue_branch "$branch_name"
 
+  log_issue_info "$identifier" "Starting Codex session."
   if run_codex_for_issue "$issue_json"; then
+    log_issue_success "$identifier" "Codex session completed."
     if ! git_has_changes; then
       issue_add_comment "$issue_id" "Agent completed without producing a diff. Returning issue to \`$LINEAR_TODO_STATE_NAME\`."
       git -C "$ROOT_DIR" checkout "$GIT_BASE_BRANCH" >/dev/null 2>&1 || true
       issue_update_state "$issue_id" "$TODO_STATE_ID"
+      log_issue_warn "$identifier" "Codex completed without producing a diff; returned to \`$LINEAR_TODO_STATE_NAME\`."
       return 1
     fi
 
     if ! commit_issue_changes "$issue_json"; then
       issue_add_comment "$issue_id" "Agent failed while committing changes for \`$identifier\`. The branch was left in place for inspection."
+      log_issue_error "$identifier" "Failed while committing changes."
       return 1
     fi
 
     commit_sha="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
     issue_add_comment "$issue_id" "$(printf 'Agent committed `%s` on branch `%s` (commit `%s`). Preparing pull request.' "$identifier" "$branch_name" "$commit_sha")"
+    log_issue_success "$identifier" "Committed changes on \`$branch_name\` (commit $commit_sha)."
 
     if ! pr_url="$(create_pull_request "$issue_json" "$branch_name")"; then
       issue_add_comment "$issue_id" "Agent implemented \`$identifier\` but failed to open a PR. The branch and commit were left in place for inspection."
+      log_issue_error "$identifier" "Implemented changes but failed to open PR."
       return 1
     fi
 
     if ! pr_number="$(extract_pr_number_from_url "$pr_url")"; then
       issue_add_comment "$issue_id" "Agent opened PR $pr_url but could not determine its number. The branch and commit were left in place for inspection."
+      log_issue_warn "$identifier" "Opened PR but could not parse PR number from URL."
       return 1
     fi
     summary="$(git_status_summary)"
@@ -197,12 +301,12 @@ process_issue() {
     issue_add_comment "$issue_id" "$(printf 'Agent opened PR %s from branch `%s` and moved the issue to `%s`.\n\nGit status:\n```text\n%s\n```' "$pr_url" "$branch_name" "$LINEAR_IN_REVIEW_STATE_NAME" "${summary:-clean}")"
     issue_update_state "$issue_id" "$IN_REVIEW_STATE_ID"
     git -C "$ROOT_DIR" checkout "$GIT_BASE_BRANCH" >/dev/null 2>&1 || true
-    echo "opened-pr:$identifier"
+    log_issue_success "$identifier" "Opened PR $pr_url and moved issue to \`$LINEAR_IN_REVIEW_STATE_NAME\`."
   else
     issue_add_comment "$issue_id" "Agent failed while implementing \`$identifier\`. Returning issue to \`$LINEAR_TODO_STATE_NAME\`."
     git -C "$ROOT_DIR" checkout "$GIT_BASE_BRANCH" >/dev/null 2>&1 || true
     issue_update_state "$issue_id" "$TODO_STATE_ID"
-    echo "failed:$identifier" >&2
+    log_issue_error "$identifier" "Codex session failed; returned to \`$LINEAR_TODO_STATE_NAME\`."
     return 1
   fi
 }
@@ -212,16 +316,22 @@ run_once() {
   local issue_json
 
   review_issue="$(pick_next_in_review_issue || true)"
-  if [[ -n "$review_issue" ]] && reconcile_in_review_issue "$review_issue"; then
-    return 0
+  if [[ -n "$review_issue" ]]; then
+    if reconcile_in_review_issue "$review_issue"; then
+      clear_idle_notice
+      return 0
+    fi
+  else
+    clear_waiting_issue_state
   fi
 
   issue_json="$(pick_next_todo_issue || true)"
   if [[ -z "$issue_json" ]]; then
-    echo "No Todo issues found in project '$LINEAR_PROJECT_NAME'."
+    remember_idle_notice "no-todo" "No \`$LINEAR_TODO_STATE_NAME\` or \`$LINEAR_BACKLOG_STATE_NAME\` issues found in project '$LINEAR_PROJECT_NAME'. Agent is idle."
     return 0
   fi
 
+  clear_idle_notice
   process_issue "$issue_json"
 }
 
@@ -283,7 +393,7 @@ main() {
       ;;
     reconcile)
       review_issue="$(pick_next_in_review_issue || true)"
-      [[ -n "$review_issue" ]] || { echo "No In Review issues found."; exit 0; }
+      [[ -n "$review_issue" ]] || { log_info "No \`$LINEAR_IN_REVIEW_STATE_NAME\` issues found."; exit 0; }
       reconcile_in_review_issue "$review_issue"
       ;;
     *)

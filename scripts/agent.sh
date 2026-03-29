@@ -51,9 +51,15 @@ ensure_prerequisites() {
 
 graphql() {
   local query="$1"
-  local variables="${2:-{}}"
+  local variables
   local payload
   local response
+
+  if [[ $# -ge 2 ]]; then
+    variables="$2"
+  else
+    variables='{}'
+  fi
 
   payload="$(printf '%s' "$variables" | jq -c --arg q "$query" '{query: $q, variables: .}')"
   response="$(
@@ -234,10 +240,9 @@ run_codex_for_issue() {
   identifier="$(jq -r '.identifier' <<<"$issue_json")"
   log_file="$LOG_DIR/${identifier}.log"
 
-  codex exec \
+  codex -a never exec \
     -C "$ROOT_DIR" \
     -s workspace-write \
-    -a never \
     --model "$CODEX_MODEL" \
     "$(codex_issue_prompt "$issue_json")" | tee "$log_file"
 }

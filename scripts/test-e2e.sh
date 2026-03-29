@@ -42,4 +42,16 @@ pr_url="$(jq -r '.pr_url' "$issue_state_file")"
   exit 1
 }
 
-printf 'E2E reached PR stage for %s: %s\n' "$identifier" "$pr_url"
+gh pr review "$pr_url" --approve
+gh pr merge "$pr_url" --squash --delete-branch
+
+"$AGENT_BIN" reconcile || true
+
+issue_state_json="$("$AGENT_BIN" show-issue "$issue_id")"
+issue_state_name="$(jq -r '.data.issue.state.name' <<<"$issue_state_json")"
+[[ "$issue_state_name" == "Done" ]] || {
+  echo "Expected $identifier to be Done after approval and merge, got $issue_state_name" >&2
+  exit 1
+}
+
+printf 'E2E passed for %s via %s\n' "$identifier" "$pr_url"

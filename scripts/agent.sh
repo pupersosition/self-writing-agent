@@ -129,6 +129,12 @@ fetch_project_issues() {
   graphql "query { project(id: \"$PROJECT_ID\") { issues(first: 50) { nodes { id identifier title description url branchName state { id name type } createdAt updatedAt } } } }"
 }
 
+fetch_issue_by_id() {
+  local issue_id="$1"
+
+  graphql "query { issue(id: \"$issue_id\") { id identifier title url state { id name type } } }"
+}
+
 pick_next_issue_by_state() {
   local state_name="$1"
 
@@ -556,6 +562,7 @@ Usage:
   ./scripts/agent.sh run-forever [seconds]
   ./scripts/agent.sh create-backlog-issue "title" "description"
   ./scripts/agent.sh create-test-issue "title" "description"
+  ./scripts/agent.sh show-issue ISSUE_ID
   ./scripts/agent.sh move-issue-to-todo ISSUE_ID
   ./scripts/agent.sh reconcile
 EOF
@@ -584,6 +591,10 @@ main() {
     create-test-issue)
       [[ $# -eq 3 ]] || { usage >&2; exit 1; }
       create_issue_with_lin "$2" "$3"
+      ;;
+    show-issue)
+      [[ $# -eq 2 ]] || { usage >&2; exit 1; }
+      fetch_issue_by_id "$2"
       ;;
     move-issue-to-todo)
       [[ $# -eq 2 ]] || { usage >&2; exit 1; }

@@ -46,6 +46,7 @@ reconcile_in_review_issue() {
   local saved_state
   local pr_url
   local pr_number
+  local commit_sha
   local pr_data
   local merged_at
 
@@ -76,13 +77,16 @@ process_issue() {
   local identifier
   local title
   local summary
+  local issue_url
   local branch_name
   local pr_url
   local pr_number
+  local commit_sha
 
   issue_id="$(jq -r '.id' <<<"$issue_json")"
   identifier="$(jq -r '.identifier' <<<"$issue_json")"
   title="$(jq -r '.title' <<<"$issue_json")"
+  issue_url="$(jq -r '.url' <<<"$issue_json")"
   branch_name="$(issue_branch_name "$issue_json")"
 
   if ! preflight_for_issue; then
@@ -92,7 +96,7 @@ process_issue() {
 
   clear_issue_context "$identifier"
   issue_update_state "$issue_id" "$IN_PROGRESS_STATE_ID"
-  issue_add_comment "$issue_id" "Agent started implementing \`$identifier\`: $title"
+  issue_add_comment "$issue_id" "$(printf 'Agent started implementing `%s` on branch `%s` using model `%s`.\n\nTitle: %s\nIssue: %s' "$identifier" "$branch_name" "$CODEX_MODEL" "$title" "$issue_url")"
   checkout_issue_branch "$branch_name"
 
   if run_codex_for_issue "$issue_json"; then
@@ -108,6 +112,9 @@ process_issue() {
       return 1
     fi
 
+    commit_sha="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
+    issue_add_comment "$issue_id" "$(printf 'Agent committed `%s` on branch `%s` (commit `%s`). Preparing pull request.' "$identifier" "$branch_name" "$commit_sha")"
+
     if ! pr_url="$(create_pull_request "$issue_json" "$branch_name")"; then
       issue_add_comment "$issue_id" "Agent implemented \`$identifier\` but failed to open a PR. The branch and commit were left in place for inspection."
       return 1
@@ -119,7 +126,7 @@ process_issue() {
     fi
     summary="$(git_status_summary)"
     save_issue_state "$identifier" "$branch_name" "$pr_url" "$pr_number"
-    issue_add_comment "$issue_id" "$(printf 'Agent opened PR %s and moved the issue to `%s`.\n\nGit status:\n```text\n%s\n```' "$pr_url" "$LINEAR_IN_REVIEW_STATE_NAME" "${summary:-clean}")"
+    issue_add_comment "$issue_id" "$(printf 'Agent opened PR %s from branch `%s` and moved the issue to `%s`.\n\nGit status:\n```text\n%s\n```' "$pr_url" "$branch_name" "$LINEAR_IN_REVIEW_STATE_NAME" "${summary:-clean}")"
     issue_update_state "$issue_id" "$IN_REVIEW_STATE_ID"
     git -C "$ROOT_DIR" checkout "$GIT_BASE_BRANCH" >/dev/null 2>&1 || true
     echo "opened-pr:$identifier"

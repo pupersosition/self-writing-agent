@@ -82,12 +82,19 @@ process_issue() {
   local pr_url
   local pr_number
   local commit_sha
+  local latest_state
 
   issue_id="$(jq -r '.id' <<<"$issue_json")"
   identifier="$(jq -r '.identifier' <<<"$issue_json")"
   title="$(jq -r '.title' <<<"$issue_json")"
   issue_url="$(jq -r '.url' <<<"$issue_json")"
   branch_name="$(issue_branch_name "$issue_json")"
+
+  latest_state="$(issue_current_state_name "$issue_id")"
+  if [[ -n "$latest_state" && "$latest_state" != "$LINEAR_TODO_STATE_NAME" && "$latest_state" != "$LINEAR_BACKLOG_STATE_NAME" ]]; then
+    echo "skipping:$identifier:state=$latest_state"
+    return 0
+  fi
 
   if ! preflight_for_issue; then
     issue_add_comment "$issue_id" "Agent could not start \`$identifier\` because the local git or GitHub CLI prerequisites are not satisfied."

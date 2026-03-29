@@ -477,7 +477,7 @@ run_once() {
 }
 
 run_forever() {
-  local interval="${1:-60}"
+  local interval="${1:-30}"
 
   while true; do
     run_once || true
@@ -529,7 +529,7 @@ main() {
       run_once
       ;;
     run-forever)
-      run_forever "${2:-60}"
+      run_forever "${2:-30}"
       ;;
     reconcile)
       review_issue="$(pick_next_in_review_issue || true)"

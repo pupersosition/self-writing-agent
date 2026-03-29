@@ -76,7 +76,7 @@ resolve_context() {
 }
 
 fetch_project_issues() {
-  graphql "query { project(id: \"$PROJECT_ID\") { issues(first: 50) { nodes { id identifier title description url branchName state { id name type } createdAt updatedAt } } } }"
+  graphql "query { project(id: \"$PROJECT_ID\") { issues(first: 50) { nodes { id identifier title description url branchName state { id name type } createdAt updatedAt attachments(first: 25) { nodes { id title subtitle url metadata } } } } } }"
 }
 
 pick_next_issue_by_state() {

@@ -243,14 +243,21 @@ create_backlog_issue() {
 create_issue_with_lin() {
   local title="$1"
   local description="$2"
+  local cli_output
 
   [[ -x "$LINEAR_CLI_BIN" ]] || {
     echo "Linear CLI not found at $LINEAR_CLI_BIN" >&2
     exit 1
   }
 
-  "$LINEAR_CLI_BIN" new --team "$LINEAR_TEAM_KEY" --title "$title" --description "$description" >/dev/null
-  find_issue_by_title "$title"
+  if cli_output="$("$LINEAR_CLI_BIN" new --team "$LINEAR_TEAM_KEY" --title "$title" --description "$description" 2>&1 >/dev/null)"; then
+    find_issue_by_title "$title"
+    return 0
+  fi
+
+  printf 'Linear CLI issue creation failed, falling back to GraphQL: %s\n' "$cli_output" >&2
+  create_issue_api "$title" "$description" "$BACKLOG_STATE_ID" |
+    jq -c '.data.issueCreate.issue'
 }
 
 codex_issue_prompt() {

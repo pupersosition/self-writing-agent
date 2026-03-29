@@ -163,3 +163,10 @@ load_issue_state() {
   [[ -f "$state_file" ]] || return 1
   cat "$state_file"
 }
+
+issue_current_state_name() {
+  local issue_id="$1"
+
+  graphql "query { issue(id: \"$issue_id\") { state { name } } }" \
+    | jq -r '.data.issue.state.name // empty'
+}

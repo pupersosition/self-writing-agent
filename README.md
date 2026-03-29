@@ -13,6 +13,19 @@ Prototype bash agent that watches the Linear project `Self writing agent`, picks
 - `LINEAR_API_KEY`
 - configured `git user.name` and `git user.email`
 
+## Configuration
+
+Export the required environment before launching the loop so the agent can reach the right Linear project and GitHub repo:
+
+```bash
+export LINEAR_API_KEY="lin_api_your_token" # required
+export LINEAR_PROJECT_NAME="Self writing agent" # override to point at another Linear project
+export LINEAR_TEAM_KEY="SEL"                 # keep in sync with the target Linear team
+export GITHUB_REPO="pupersosition/self-writing-agent" # set to your fork when testing locally
+```
+
+Then authenticate once with GitHub (`gh auth login`) and ensure `git config user.name` / `user.email` are set so `scripts/agent.sh` can create branches and commits without interactivity.
+
 The loop uses:
 
 - Linear GraphQL for project filtering, comments, and state transitions

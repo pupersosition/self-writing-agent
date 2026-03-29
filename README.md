@@ -56,7 +56,7 @@ State flow:
 - `Backlog`: picked if there is no `Todo` issue
 - `In Progress`: agent is implementing on a branch
 - `In Review`: PR is open and the agent is waiting for review and merge
-- `Done`: agent only sets this after a later polling pass confirms the PR merged through `gh`
+- `Done`: agent only sets this after a later polling pass confirms the PR merged through `gh` and the local checkout synced to the latest `main`
 
 The loop expects you to:
 

@@ -79,7 +79,10 @@ pull_latest_agent_source() {
 
   previous_sha="$(git -C "$ROOT_DIR" rev-parse "$GIT_BASE_BRANCH" 2>/dev/null || true)"
 
-  git -C "$ROOT_DIR" checkout "$GIT_BASE_BRANCH" >/dev/null 2>&1 || true
+  if ! git -C "$ROOT_DIR" checkout "$GIT_BASE_BRANCH" >/dev/null 2>&1; then
+    echo "Failed to checkout $GIT_BASE_BRANCH before pulling the latest agent source." >&2
+    return 2
+  fi
 
   if ! pull_output="$(git -C "$ROOT_DIR" pull --ff-only "$GIT_REMOTE_NAME" "$GIT_BASE_BRANCH" 2>&1)"; then
     echo "Failed to pull latest agent source: $pull_output" >&2

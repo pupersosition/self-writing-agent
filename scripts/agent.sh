@@ -9,6 +9,7 @@ LIB_DIR="$ROOT_DIR/scripts/lib"
 AGENT_SCRIPT_PATH="$ROOT_DIR/scripts/agent.sh"
 declare -a AGENT_ORIGINAL_ARGS=()
 AGENT_COMMAND=""
+AGENT_SOURCE_SYNC_STATUS=""
 
 LINEAR_API_URL="${LINEAR_API_URL:-https://api.linear.app/graphql}"
 LINEAR_PROJECT_NAME="${LINEAR_PROJECT_NAME:-Self writing agent}"
@@ -41,25 +42,46 @@ source "$LIB_DIR/git.sh"
 # shellcheck source=./lib/codex.sh
 source "$LIB_DIR/codex.sh"
 
-refresh_agent_state_after_merge() {
+sync_agent_state_after_merge() {
   local identifier="${1:-}"
   local pull_status
 
   if pull_latest_agent_source; then
-    echo "agent-updated:${identifier:-unknown}"
-
-    if [[ "$AGENT_COMMAND" == "run-forever" ]]; then
-      echo "Agent source updated after PR merge; restarting to load new code." >&2
-      exec "$AGENT_SCRIPT_PATH" "${AGENT_ORIGINAL_ARGS[@]}"
-    fi
-
-    return
+    AGENT_SOURCE_SYNC_STATUS="updated"
+    return 0
   fi
 
   pull_status="$?"
-  if [[ "$pull_status" -gt 1 ]]; then
-    echo "Agent detected merged issue ${identifier:-unknown} but failed to pull latest source." >&2
+  if [[ "$pull_status" -eq 1 ]]; then
+    AGENT_SOURCE_SYNC_STATUS="current"
+    return 0
   fi
+
+  AGENT_SOURCE_SYNC_STATUS="failed"
+  echo "Agent detected merged issue ${identifier:-unknown} but failed to sync latest source." >&2
+  return "$pull_status"
+}
+
+restart_agent_after_merge() {
+  local identifier="${1:-}"
+
+  case "${AGENT_SOURCE_SYNC_STATUS:-}" in
+    updated)
+      echo "agent-updated:${identifier:-unknown}"
+      ;;
+    current)
+      echo "agent-current:${identifier:-unknown}"
+      ;;
+  esac
+
+  if [[ "$AGENT_COMMAND" == "run-forever" ]]; then
+    echo "Agent source synced after PR merge; restarting to load current code." >&2
+    exec "$AGENT_SCRIPT_PATH" "${AGENT_ORIGINAL_ARGS[@]}"
+    echo "Agent source synced after PR merge but restart failed." >&2
+    return 1
+  fi
+
+  return 0
 }
 
 
@@ -86,9 +108,19 @@ reconcile_in_review_issue() {
   merged_at="$(jq -r '.mergedAt // empty' <<<"$pr_data")"
 
   if [[ -n "$merged_at" ]] && pr_has_approval "$pr_number"; then
-    issue_add_comment "$issue_id" "PR approved and merged: $(jq -r '.url' <<<"$pr_data"). Marking issue \`Done\`."
+    if ! sync_agent_state_after_merge "$identifier"; then
+      issue_add_comment "$issue_id" "PR approved and merged: $(jq -r '.url' <<<"$pr_data"). The agent could not sync the latest \`$GIT_BASE_BRANCH\`, so the issue remains \`$LINEAR_IN_REVIEW_STATE_NAME\` for follow-up."
+      return 1
+    fi
+
+    issue_add_comment "$issue_id" "PR approved and merged: $(jq -r '.url' <<<"$pr_data"). Agent synced the latest \`$GIT_BASE_BRANCH\` and is marking the issue \`Done\`."
     issue_update_state "$issue_id" "$DONE_STATE_ID"
-    refresh_agent_state_after_merge "$identifier"
+
+    if ! restart_agent_after_merge "$identifier"; then
+      issue_add_comment "$issue_id" "PR approved and merged, and the issue was marked \`Done\`, but the agent process failed to restart after syncing \`$GIT_BASE_BRANCH\`. Investigate the running process."
+      return 1
+    fi
+
     return 0
   fi
 

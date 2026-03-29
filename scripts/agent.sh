@@ -205,6 +205,17 @@ load_issue_state() {
   cat "$state_file"
 }
 
+extract_pr_number_from_url() {
+  local pr_url="$1"
+
+  if [[ "$pr_url" =~ /pull/([0-9]+)([^0-9].*)?$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  return 1
+}
+
 codex_issue_prompt() {
   local issue_json="$1"
   local identifier
@@ -442,7 +453,10 @@ process_issue() {
       return 1
     fi
 
-    pr_number="$(gh pr view "$pr_url" --repo "$GITHUB_REPO" --json number -q '.number')"
+    if ! pr_number="$(extract_pr_number_from_url "$pr_url")"; then
+      issue_add_comment "$issue_id" "Agent opened PR $pr_url but could not determine its number. The branch and commit were left in place for inspection."
+      return 1
+    fi
     summary="$(git_status_summary)"
     save_issue_state "$identifier" "$branch_name" "$pr_url" "$pr_number"
     issue_add_comment "$issue_id" "$(printf 'Agent opened PR %s and moved the issue to `%s`.\n\nGit status:\n```text\n%s\n```' "$pr_url" "$LINEAR_IN_REVIEW_STATE_NAME" "${summary:-clean}")"

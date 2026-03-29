@@ -72,6 +72,29 @@ checkout_issue_branch() {
   git -C "$ROOT_DIR" checkout -B "$branch_name" "$GIT_BASE_BRANCH" >/dev/null
 }
 
+pull_latest_agent_source() {
+  local previous_sha
+  local current_sha
+  local pull_output
+
+  previous_sha="$(git -C "$ROOT_DIR" rev-parse "$GIT_BASE_BRANCH" 2>/dev/null || true)"
+
+  git -C "$ROOT_DIR" checkout "$GIT_BASE_BRANCH" >/dev/null 2>&1 || true
+
+  if ! pull_output="$(git -C "$ROOT_DIR" pull --ff-only "$GIT_REMOTE_NAME" "$GIT_BASE_BRANCH" 2>&1)"; then
+    echo "Failed to pull latest agent source: $pull_output" >&2
+    return 2
+  fi
+
+  current_sha="$(git -C "$ROOT_DIR" rev-parse "$GIT_BASE_BRANCH" 2>/dev/null || true)"
+
+  if [[ "$previous_sha" == "$current_sha" ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
 git_has_changes() {
   [[ -n "$(git -C "$ROOT_DIR" status --short)" ]]
 }

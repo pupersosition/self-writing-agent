@@ -6,6 +6,9 @@ STATE_DIR="$ROOT_DIR/.linear-agent"
 LOG_DIR="$STATE_DIR/logs"
 ISSUE_STATE_DIR="$STATE_DIR/issues"
 LIB_DIR="$ROOT_DIR/scripts/lib"
+AGENT_SCRIPT_PATH="$ROOT_DIR/scripts/agent.sh"
+declare -a AGENT_ORIGINAL_ARGS=()
+AGENT_COMMAND=""
 
 LINEAR_API_URL="${LINEAR_API_URL:-https://api.linear.app/graphql}"
 LINEAR_PROJECT_NAME="${LINEAR_PROJECT_NAME:-Self writing agent}"
@@ -38,6 +41,27 @@ source "$LIB_DIR/git.sh"
 # shellcheck source=./lib/codex.sh
 source "$LIB_DIR/codex.sh"
 
+refresh_agent_state_after_merge() {
+  local identifier="${1:-}"
+  local pull_status
+
+  if pull_latest_agent_source; then
+    echo "agent-updated:${identifier:-unknown}"
+
+    if [[ "$AGENT_COMMAND" == "run-forever" ]]; then
+      echo "Agent source updated after PR merge; restarting to load new code." >&2
+      exec "$AGENT_SCRIPT_PATH" "${AGENT_ORIGINAL_ARGS[@]}"
+    fi
+
+    return
+  fi
+
+  pull_status="$?"
+  if [[ "$pull_status" -gt 1 ]]; then
+    echo "Agent detected merged issue ${identifier:-unknown} but failed to pull latest source." >&2
+  fi
+}
+
 
 reconcile_in_review_issue() {
   local issue_json="$1"
@@ -64,6 +88,7 @@ reconcile_in_review_issue() {
   if [[ -n "$merged_at" ]] && pr_has_approval "$pr_number"; then
     issue_add_comment "$issue_id" "PR approved and merged: $(jq -r '.url' <<<"$pr_data"). Marking issue \`Done\`."
     issue_update_state "$issue_id" "$DONE_STATE_ID"
+    refresh_agent_state_after_merge "$identifier"
     return 0
   fi
 
@@ -208,6 +233,7 @@ main() {
 
   ensure_prerequisites
   resolve_context
+  AGENT_COMMAND="$command"
 
   case "$command" in
     context)
@@ -231,4 +257,5 @@ main() {
   esac
 }
 
+AGENT_ORIGINAL_ARGS=("$@")
 main "$@"

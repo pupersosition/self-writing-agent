@@ -16,7 +16,6 @@ LINEAR_IN_PROGRESS_STATE_NAME="${LINEAR_IN_PROGRESS_STATE_NAME:-In Progress}"
 LINEAR_IN_REVIEW_STATE_NAME="${LINEAR_IN_REVIEW_STATE_NAME:-In Review}"
 LINEAR_DONE_STATE_NAME="${LINEAR_DONE_STATE_NAME:-Done}"
 CODEX_MODEL="${CODEX_MODEL:-gpt-5-codex}"
-LINEAR_CLI_BIN="${LINEAR_CLI_BIN:-$ROOT_DIR/node_modules/.bin/lin}"
 GITHUB_REPO="${GITHUB_REPO:-pupersosition/self-writing-agent}"
 GIT_REMOTE_NAME="${GIT_REMOTE_NAME:-origin}"
 GIT_BASE_BRANCH="${GIT_BASE_BRANCH:-main}"
@@ -50,17 +49,13 @@ ensure_prerequisites() {
   mkdir -p "$LOG_DIR" "$ISSUE_STATE_DIR"
 }
 
-json_escape() {
-  jq -Rn --arg value "$1" '$value'
-}
-
 graphql() {
   local query="$1"
   local variables="${2:-{}}"
   local payload
   local response
 
-  payload="$(jq -cn --arg q "$query" --argjson v "$variables" '{query: $q, variables: $v}')"
+  payload="$(printf '%s' "$variables" | jq -c --arg q "$query" '{query: $q, variables: .}')"
   response="$(
     curl -fsS "$LINEAR_API_URL" \
       -H 'Content-Type: application/json' \
@@ -129,12 +124,6 @@ fetch_project_issues() {
   graphql "query { project(id: \"$PROJECT_ID\") { issues(first: 50) { nodes { id identifier title description url branchName state { id name type } createdAt updatedAt } } } }"
 }
 
-fetch_issue_by_id() {
-  local issue_id="$1"
-
-  graphql "query { issue(id: \"$issue_id\") { id identifier title url state { id name type } } }"
-}
-
 pick_next_issue_by_state() {
   local state_name="$1"
 
@@ -148,7 +137,13 @@ pick_next_issue_by_state() {
 }
 
 pick_next_todo_issue() {
-  pick_next_issue_by_state "$LINEAR_TODO_STATE_NAME"
+  fetch_project_issues |
+    jq -c --arg todo_state "$LINEAR_TODO_STATE_NAME" --arg backlog_state "$LINEAR_BACKLOG_STATE_NAME" '
+      .data.project.issues.nodes
+      | map(select(.state.name == $todo_state or .state.name == $backlog_state))
+      | sort_by(if .state.name == $todo_state then 0 else 1 end, .createdAt)
+      | .[0] // empty
+    '
 }
 
 pick_next_in_review_issue() {
@@ -169,34 +164,6 @@ issue_add_comment() {
 
   graphql 'mutation($input: CommentCreateInput!) { commentCreate(input: $input) { success } }' \
     "$(jq -cn --arg issueId "$issue_id" --arg body "$body" '{input: {issueId: $issueId, body: $body}}')" >/dev/null
-}
-
-create_issue_api() {
-  local title="$1"
-  local description="$2"
-  local state_id="$3"
-
-  graphql 'mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier title } } }' \
-    "$(jq -cn \
-      --arg teamId "$TEAM_ID" \
-      --arg projectId "$PROJECT_ID" \
-      --arg stateId "$state_id" \
-      --arg title "$title" \
-      --arg description "$description" \
-      '{input: {teamId: $teamId, projectId: $projectId, stateId: $stateId, title: $title, description: $description}}'
-    )"
-}
-
-find_issue_by_title() {
-  local title="$1"
-
-  graphql "query { team(id: \"$TEAM_ID\") { issues(first: 50) { nodes { id identifier title createdAt } } } }" |
-    jq -c --arg title "$title" '
-      .data.team.issues.nodes
-      | map(select(.title == $title))
-      | sort_by(.createdAt)
-      | last // empty
-    '
 }
 
 issue_state_file() {
@@ -230,34 +197,6 @@ load_issue_state() {
   state_file="$(issue_state_file "$identifier")"
   [[ -f "$state_file" ]] || return 1
   cat "$state_file"
-}
-
-create_backlog_issue() {
-  local title="$1"
-  local description="$2"
-
-  create_issue_api "$title" "$description" "$BACKLOG_STATE_ID" |
-    jq -r '.data.issueCreate.issue.identifier'
-}
-
-create_issue_with_lin() {
-  local title="$1"
-  local description="$2"
-  local cli_output
-
-  [[ -x "$LINEAR_CLI_BIN" ]] || {
-    echo "Linear CLI not found at $LINEAR_CLI_BIN" >&2
-    exit 1
-  }
-
-  if cli_output="$("$LINEAR_CLI_BIN" new --team "$LINEAR_TEAM_KEY" --title "$title" --description "$description" 2>&1 >/dev/null)"; then
-    find_issue_by_title "$title"
-    return 0
-  fi
-
-  printf 'Linear CLI issue creation failed, falling back to GraphQL: %s\n' "$cli_output" >&2
-  create_issue_api "$title" "$description" "$BACKLOG_STATE_ID" |
-    jq -c '.data.issueCreate.issue'
 }
 
 codex_issue_prompt() {
@@ -567,10 +506,6 @@ Usage:
   ./scripts/agent.sh context
   ./scripts/agent.sh run-once
   ./scripts/agent.sh run-forever [seconds]
-  ./scripts/agent.sh create-backlog-issue "title" "description"
-  ./scripts/agent.sh create-test-issue "title" "description"
-  ./scripts/agent.sh show-issue ISSUE_ID
-  ./scripts/agent.sh move-issue-to-todo ISSUE_ID
   ./scripts/agent.sh reconcile
 EOF
 }
@@ -590,22 +525,6 @@ main() {
       ;;
     run-forever)
       run_forever "${2:-60}"
-      ;;
-    create-backlog-issue)
-      [[ $# -eq 3 ]] || { usage >&2; exit 1; }
-      create_backlog_issue "$2" "$3"
-      ;;
-    create-test-issue)
-      [[ $# -eq 3 ]] || { usage >&2; exit 1; }
-      create_issue_with_lin "$2" "$3"
-      ;;
-    show-issue)
-      [[ $# -eq 2 ]] || { usage >&2; exit 1; }
-      fetch_issue_by_id "$2"
-      ;;
-    move-issue-to-todo)
-      [[ $# -eq 2 ]] || { usage >&2; exit 1; }
-      issue_update_state "$2" "$TODO_STATE_ID"
       ;;
     reconcile)
       review_issue="$(pick_next_in_review_issue || true)"

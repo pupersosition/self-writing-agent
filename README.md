@@ -1,6 +1,6 @@
 # Self Writing Agent
 
-Prototype bash agent that watches the Linear project `Self writing agent`, creates backlog issues, and implements `Todo` issues by delegating the repo work to the local `codex` CLI.
+Prototype bash agent that watches the Linear project `Self writing agent`, picks the next ready issue, implements it by delegating to the local `codex` CLI, opens a PR in `pupersosition/self-writing-agent`, and only marks the Linear issue `Done` after the PR is approved and merged.
 
 ## Requirements
 
@@ -13,11 +13,11 @@ Prototype bash agent that watches the Linear project `Self writing agent`, creat
 - `LINEAR_API_KEY`
 - configured `git user.name` and `git user.email`
 
-The repo also vendors the Linear CLI as `./node_modules/.bin/lin`. The current CLI only supports `new` and `checkout`, so the agent uses:
+The loop uses:
 
-- `lin new` for issue creation when possible
-- Linear GraphQL for project filtering, issue selection, comments, and state transitions
-- `gh` for pull request creation and merge detection
+- Linear GraphQL for project filtering, comments, and state transitions
+- `gh` for PR creation and merge detection
+- `codex exec` for the actual repo implementation step
 
 ## Main Loop
 
@@ -27,16 +27,10 @@ Run a single iteration:
 ./scripts/agent.sh run-once
 ```
 
-Create a backlog issue:
+Run continuously:
 
 ```bash
-./scripts/agent.sh create-backlog-issue "Title" "Description"
-```
-
-Create a real test issue and drive it through implementation and PR creation:
-
-```bash
-./scripts/test-e2e.sh
+./scripts/agent.sh run-forever 30
 ```
 
 ## Issue Execution Model
@@ -45,18 +39,21 @@ The current prototype turns each `Todo` issue into a `codex exec` prompt. A good
 
 State flow:
 
-- `Backlog`: issue exists but is not executable yet
-- `Todo`: eligible for the agent to pick up
+- `Todo`: picked first when available
+- `Backlog`: picked if there is no `Todo` issue
 - `In Progress`: agent is implementing on a branch
 - `In Review`: PR is open and the agent is waiting for review and merge
 - `Done`: agent only sets this after a later polling pass confirms the PR merged through `gh`
 
-The agent will not mark an issue `Done` immediately after changing files.
+The loop expects you to:
+
+1. Create an issue in the `Self writing agent` Linear project.
+2. Let the loop pick it up and open a PR.
+3. Approve and merge the PR.
+4. Leave the loop running so it can observe the merged PR and move the issue to `Done`.
 
 Example:
 
 ```text
-Create a file named AGENT_E2E_TEST.md with the exact contents:
-
-hello from linear e2e
+Add a short setup section to README.md describing how to start the agent loop.
 ```

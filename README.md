@@ -26,6 +26,9 @@ export GITHUB_REPO="pupersosition/self-writing-agent" # set to your fork when te
 export ENABLE_SELF_TASKING=1                 # set to 0 to disable automatic task creation
 export SELF_REVIEW_MIN_INTERVAL=21600        # seconds between self-review runs (default: 6 hours)
 export SELF_REVIEW_MAX_TASKS=3               # max issues to open per self-review run
+# Optional Linear GraphQL retry tuning
+export LINEAR_GRAPHQL_MAX_ATTEMPTS=3         # max curl/HTTP retry attempts (default: 3)
+export LINEAR_GRAPHQL_BACKOFF_BASE_SECONDS=1 # initial backoff delay, doubles each retry (default: 1s)
 ```
 
 Then authenticate once with GitHub (`gh auth login`) and ensure `git config user.name` / `user.email` are set so `scripts/agent.sh` can create branches and commits without interactivity.

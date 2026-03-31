@@ -1,5 +1,7 @@
 : "${LINEAR_GRAPHQL_MAX_ATTEMPTS:=3}"
 : "${LINEAR_GRAPHQL_BACKOFF_BASE_SECONDS:=1}"
+: "${LINEAR_PROJECT_ISSUE_PAGE_SIZE:=50}"
+: "${LINEAR_PROJECT_ISSUE_SCAN_CAP:=500}"
 
 linear__log_warn() {
   if declare -F log_warn >/dev/null 2>&1; then
@@ -14,6 +16,28 @@ linear__log_error() {
     log_error "$@"
   else
     printf '[ERROR] %s\n' "$*" >&2
+  fi
+}
+
+linear__coerce_positive_int() {
+  local raw_value="${1:-}"
+  local fallback="${2:-1}"
+
+  if [[ "$raw_value" =~ ^[0-9]+$ ]] && (( raw_value > 0 )); then
+    printf '%s\n' "$raw_value"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+linear__coerce_non_negative_int() {
+  local raw_value="${1:-}"
+  local fallback="${2:-0}"
+
+  if [[ "$raw_value" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$raw_value"
+  else
+    printf '%s\n' "$fallback"
   fi
 }
 
@@ -161,30 +185,178 @@ resolve_context() {
   }
 }
 
+linear__fetch_project_issues_page() {
+  local cursor="${1:-}"
+  local page_size="${2:-50}"
+  local variables
+
+  variables="$(
+    jq -cn \
+      --arg projectId "$PROJECT_ID" \
+      --argjson first "$page_size" \
+      --arg after "$cursor" \
+      '{
+        projectId: $projectId,
+        first: $first,
+        after: (if ($after | length) == 0 then null else $after end)
+      }'
+  )"
+
+  graphql 'query($projectId: String!, $first: Int!, $after: String) {
+    project(id: $projectId) {
+      issues(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          identifier
+          title
+          description
+          url
+          branchName
+          state { id name type }
+          createdAt
+          updatedAt
+          attachments(first: 25) { nodes { id title subtitle url metadata } }
+        }
+      }
+    }
+  }' "$variables"
+}
+
 fetch_project_issues() {
-  graphql "query { project(id: \"$PROJECT_ID\") { issues(first: 50) { nodes { id identifier title description url branchName state { id name type } createdAt updatedAt attachments(first: 25) { nodes { id title subtitle url metadata } } } } } }"
+  local page_size
+  local scan_cap
+  local cursor=""
+  local truncated=0
+  local scanned=0
+  local nodes='[]'
+  local response
+  local page_summary
+  local has_next
+  local end_cursor
+  local page_nodes
+  local page_count
+
+  page_size="$(linear__coerce_positive_int "${LINEAR_PROJECT_ISSUE_PAGE_SIZE:-}" 50)"
+  scan_cap="$(linear__coerce_non_negative_int "${LINEAR_PROJECT_ISSUE_SCAN_CAP:-}" 500)"
+
+  while :; do
+    response="$(linear__fetch_project_issues_page "$cursor" "$page_size")" || return 1
+
+    page_summary="$(
+      jq '{
+        nodes: (.data.project.issues.nodes? // []),
+        hasNextPage: (.data.project.issues.pageInfo.hasNextPage? // false),
+        endCursor: (.data.project.issues.pageInfo.endCursor? // "")
+      }' <<<"$response"
+    )"
+
+    page_nodes="$(jq '.nodes' <<<"$page_summary")"
+    nodes="$(jq -cn --argjson acc "$nodes" --argjson page "$page_nodes" '$acc + $page')"
+    page_count="$(jq 'length' <<<"$page_nodes")"
+    scanned=$((scanned + page_count))
+
+    has_next="$(jq -r '.hasNextPage' <<<"$page_summary")"
+    end_cursor="$(jq -r '.endCursor' <<<"$page_summary")"
+
+    if (( scan_cap > 0 && scanned >= scan_cap )); then
+      if [[ "$has_next" == "true" ]]; then
+        truncated=1
+      fi
+      break
+    fi
+
+    if [[ "$has_next" == "true" && -n "$end_cursor" ]]; then
+      cursor="$end_cursor"
+      continue
+    fi
+
+    break
+  done
+
+  jq -n \
+    --argjson nodes "$nodes" \
+    --argjson truncated "$truncated" \
+    --argjson scanned "$scanned" \
+    --argjson cap "$scan_cap" \
+    '{
+      data: {
+        project: {
+          issues: {
+            nodes: $nodes,
+            linearScan: {
+              truncated: ($truncated == 1),
+              scanned: $scanned,
+              cap: $cap
+            }
+          }
+        }
+      }
+    }'
 }
 
 pick_next_issue_by_state() {
   local state_name="$1"
+  local snapshot
+  local truncated
+  local scan_cap
+  local issue_json
 
-  fetch_project_issues |
+  snapshot="$(fetch_project_issues)" || return 1
+  truncated="$(jq -r '.data.project.issues.linearScan.truncated // false | tostring' <<<"$snapshot")"
+  scan_cap="$(jq -r '.data.project.issues.linearScan.cap // 0' <<<"$snapshot")"
+
+  issue_json="$(
     jq -c --arg state_name "$state_name" '
-      .data.project.issues.nodes
+      (.data.project.issues.nodes // [])
       | map(select(.state.name == $state_name))
       | sort_by(.createdAt)
       | .[0] // empty
-    '
+    ' <<<"$snapshot"
+  )"
+
+  if [[ -z "$issue_json" && "$truncated" == "true" ]]; then
+    linear__log_warn "Linear backlog scan truncated after ${scan_cap:-0} issues before finding a \"$state_name\" issue."
+  fi
+
+  if [[ -n "$issue_json" ]]; then
+    printf '%s\n' "$issue_json"
+  fi
 }
 
 pick_next_todo_issue() {
-  fetch_project_issues |
-    jq -c --arg todo_state "$LINEAR_TODO_STATE_NAME" --arg backlog_state "$LINEAR_BACKLOG_STATE_NAME" '
-      .data.project.issues.nodes
-      | map(select(.state.name == $todo_state or .state.name == $backlog_state))
-      | sort_by(if .state.name == $todo_state then 0 else 1 end, .createdAt)
-      | .[0] // empty
-    '
+  local snapshot
+  local truncated
+  local scan_cap
+  local issue_json
+
+  snapshot="$(fetch_project_issues)" || return 1
+  truncated="$(jq -r '.data.project.issues.linearScan.truncated // false | tostring' <<<"$snapshot")"
+  scan_cap="$(jq -r '.data.project.issues.linearScan.cap // 0' <<<"$snapshot")"
+
+  issue_json="$(
+    jq -c \
+      --arg todo_state "$LINEAR_TODO_STATE_NAME" \
+      --arg backlog_state "$LINEAR_BACKLOG_STATE_NAME" '
+        (.data.project.issues.nodes // [])
+        | map(select(.state.name == $todo_state or .state.name == $backlog_state))
+        | sort_by(
+            if .state.name == $todo_state then 0
+            elif .state.name == $backlog_state then 1
+            else 2 end,
+            .createdAt
+          )
+        | .[0] // empty
+      ' <<<"$snapshot"
+  )"
+
+  if [[ -z "$issue_json" && "$truncated" == "true" ]]; then
+    linear__log_warn "Linear backlog scan truncated after ${scan_cap:-0} issues before finding Todo/Backlog work."
+  fi
+
+  if [[ -n "$issue_json" ]]; then
+    printf '%s\n' "$issue_json"
+  fi
 }
 
 pick_next_in_review_issue() {

@@ -62,3 +62,45 @@ run_codex_for_issue() {
     --model "$CODEX_MODEL" \
     "$(codex_issue_prompt "$issue_json")" | tee "$log_file"
 }
+
+codex_self_review_prompt() {
+  local tasks_file="$1"
+  local existing_issues="$2"
+  local max_tasks="${3:-3}"
+
+  cat <<EOF_PROMPT
+You are auditing the repository at $ROOT_DIR to identify small, high-leverage improvements.
+
+Existing Linear issues:
+${existing_issues:-(none)}
+
+Instructions:
+- Inspect the current scripts and docs for gaps in automation, resilience, or observability.
+- Propose between 1 and $max_tasks concrete follow-up tasks that fit within this repository.
+- Each task needs a short title (<= 80 chars), a multi-sentence description, and 1-3 acceptance criteria.
+- Write the tasks as JSON to \"$tasks_file\" in the form:
+  [
+    {
+      \"title\": \"...\",
+      \"description\": \"...\",
+      \"acceptanceCriteria\": [\"...\"]
+    }
+  ]
+- Keep the descriptions actionable and reference the relevant files.
+- Do not modify any project files besides \"$tasks_file\".
+- After writing the file, print a short summary of the findings.
+EOF_PROMPT
+}
+
+run_codex_self_review() {
+  local tasks_file="$1"
+  local existing_issues="$2"
+  local max_tasks="${3:-3}"
+  local log_file="$LOG_DIR/self-review.log"
+
+  codex -a never exec \
+    -C "$ROOT_DIR" \
+    -s workspace-write \
+    --model "$CODEX_MODEL" \
+    "$(codex_self_review_prompt "$tasks_file" "$existing_issues" "$max_tasks")" | tee "$log_file"
+}

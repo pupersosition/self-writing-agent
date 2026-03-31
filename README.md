@@ -22,6 +22,10 @@ export LINEAR_API_KEY="lin_api_your_token" # required
 export LINEAR_PROJECT_NAME="Self writing agent" # override to point at another Linear project
 export LINEAR_TEAM_KEY="SEL"                 # keep in sync with the target Linear team
 export GITHUB_REPO="pupersosition/self-writing-agent" # set to your fork when testing locally
+# Optional self-task controls
+export ENABLE_SELF_TASKING=1                 # set to 0 to disable automatic task creation
+export SELF_REVIEW_MIN_INTERVAL=21600        # seconds between self-review runs (default: 6 hours)
+export SELF_REVIEW_MAX_TASKS=3               # max issues to open per self-review run
 ```
 
 Then authenticate once with GitHub (`gh auth login`) and ensure `git config user.name` / `user.email` are set so `scripts/agent.sh` can create branches and commits without interactivity.
@@ -31,6 +35,10 @@ The loop uses:
 - Linear GraphQL for project filtering, comments, and state transitions
 - `gh` for PR creation and merge detection
 - `codex exec` for the actual repo implementation step
+
+## Self-Review Task Creation
+
+When there are no `Todo` or `Backlog` issues to work on, the agent launches a Codex self-review pass. The review inspects the repository, writes proposed tasks to `.linear-agent/self-review-tasks.json`, and opens up to `SELF_REVIEW_MAX_TASKS` new Linear issues in the `Backlog` state (skipping duplicates by title). Each generated description notes that it was auto-created along with the UTC timestamp. Runs are throttled by `SELF_REVIEW_MIN_INTERVAL` so the backlog does not grow too quickly; set `ENABLE_SELF_TASKING=0` if you prefer to disable this behavior.
 
 ## Main Loop
 

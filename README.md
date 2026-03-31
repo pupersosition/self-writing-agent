@@ -10,6 +10,7 @@ Prototype bash agent that watches the Linear project `Self writing agent`, picks
 - `codex`
 - `git`
 - `gh`
+- `perl` (used for PR summary/root cause parsing helpers)
 - `LINEAR_API_KEY`
 - configured `git user.name` and `git user.email`
 

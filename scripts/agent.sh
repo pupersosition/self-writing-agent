@@ -232,6 +232,7 @@ process_issue() {
   local pr_number
   local commit_sha
   local latest_state
+  local pull_status
 
   issue_id="$(jq -r '.id' <<<"$issue_json")"
   identifier="$(jq -r '.identifier' <<<"$issue_json")"
@@ -256,6 +257,20 @@ process_issue() {
     issue_add_comment "$issue_id" "Agent could not start \`$identifier\` because the local git or GitHub CLI prerequisites are not satisfied."
     log_issue_error "$identifier" "Preflight checks failed; prerequisites missing."
     return 1
+  fi
+
+  pull_status=0
+  if pull_latest_agent_source; then
+    log_issue_info "$identifier" "Pulled latest \`$GIT_BASE_BRANCH\` before starting."
+  else
+    pull_status="$?"
+    if [[ "$pull_status" -eq 1 ]]; then
+      log_issue_info "$identifier" "Agent source already current before starting."
+    else
+      issue_add_comment "$issue_id" "Agent could not start \`$identifier\` because pulling the latest \`$GIT_BASE_BRANCH\` from remote \`$GIT_REMOTE_NAME\` failed. The issue remains in \`$LINEAR_TODO_STATE_NAME\` until the repository can pull cleanly."
+      log_issue_error "$identifier" "Failed to pull latest \`$GIT_BASE_BRANCH\` before starting issue."
+      return 1
+    fi
   fi
 
   clear_issue_context "$identifier"

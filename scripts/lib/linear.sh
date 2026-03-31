@@ -121,6 +121,30 @@ issue_add_comment() {
     "$(jq -cn --arg issueId "$issue_id" --arg body "$body" '{input: {issueId: $issueId, body: $body}}')" >/dev/null
 }
 
+issue_create() {
+  local title="$1"
+  local description="$2"
+  local state_id="${3:-$BACKLOG_STATE_ID}"
+  local payload
+  local response
+
+  payload="$(
+    jq -cn \
+      --arg teamId "$TEAM_ID" \
+      --arg projectId "$PROJECT_ID" \
+      --arg stateId "$state_id" \
+      --arg title "$title" \
+      --arg description "$description" \
+      '{input: {teamId: $teamId, projectId: $projectId, title: $title, description: $description, stateId: $stateId}}'
+  )"
+
+  response="$(
+    graphql 'mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier title url } } }' "$payload"
+  )"
+
+  jq '.data.issueCreate.issue' <<<"$response"
+}
+
 issue_state_file() {
   local identifier="$1"
   printf '%s/%s.json\n' "$ISSUE_STATE_DIR" "$identifier"

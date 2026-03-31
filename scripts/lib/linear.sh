@@ -1,8 +1,48 @@
+: "${LINEAR_GRAPHQL_MAX_ATTEMPTS:=3}"
+: "${LINEAR_GRAPHQL_BACKOFF_BASE_SECONDS:=1}"
+
+linear__log_warn() {
+  if declare -F log_warn >/dev/null 2>&1; then
+    log_warn "$@"
+  else
+    printf '[WARN] %s\n' "$*" >&2
+  fi
+}
+
+linear__log_error() {
+  if declare -F log_error >/dev/null 2>&1; then
+    log_error "$@"
+  else
+    printf '[ERROR] %s\n' "$*" >&2
+  fi
+}
+
 graphql() {
   local query="$1"
   local variables
   local payload
   local response
+  local attempt=1
+  local max_attempts
+  local backoff_base
+  local tmp_response
+  local http_status
+  local cause=""
+  local should_retry=0
+  local success=0
+  local sleep_seconds
+  local attempts_left
+  local curl_exit
+
+  max_attempts="$LINEAR_GRAPHQL_MAX_ATTEMPTS"
+  if ! [[ "$max_attempts" =~ ^[0-9]+$ ]] || (( max_attempts < 1 )); then
+    max_attempts=3
+  fi
+
+  backoff_base="$LINEAR_GRAPHQL_BACKOFF_BASE_SECONDS"
+  if ! [[ "$backoff_base" =~ ^[0-9]+$ ]]; then
+    backoff_base=1
+  fi
 
   if [[ $# -ge 2 ]]; then
     variables="$2"
@@ -11,12 +51,58 @@ graphql() {
   fi
 
   payload="$(printf '%s' "$variables" | jq -c --arg q "$query" '{query: $q, variables: .}')"
-  response="$(
-    curl -fsS "$LINEAR_API_URL" \
-      -H 'Content-Type: application/json' \
-      -H "Authorization: $LINEAR_API_KEY" \
-      --data "$payload"
-  )"
+  tmp_response="$(mktemp)"
+
+  while (( attempt <= max_attempts )); do
+    should_retry=0
+    cause=""
+
+    if http_status="$(
+      curl -sS "$LINEAR_API_URL" \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: $LINEAR_API_KEY" \
+        --data "$payload" \
+        -o "$tmp_response" \
+        -w '%{http_code}'
+    )"; then
+      response="$(<"$tmp_response")"
+      if (( http_status == 429 || (http_status >= 500 && http_status < 600) )); then
+        cause="HTTP $http_status"
+        should_retry=1
+      elif (( http_status >= 400 )); then
+        rm -f "$tmp_response"
+        linear__log_error "Linear GraphQL request failed with HTTP $http_status"
+        printf '%s\n' "$response" >&2
+        return 1
+      fi
+    else
+      curl_exit=$?
+      cause="curl exit $curl_exit"
+      should_retry=1
+    fi
+
+    if (( should_retry )); then
+      if (( attempt >= max_attempts )); then
+        break
+      fi
+      attempts_left=$(( max_attempts - attempt ))
+      sleep_seconds=$(( backoff_base * (2 ** (attempt - 1)) ))
+      linear__log_warn "Linear GraphQL attempt ${attempt} failed (${cause}); retrying in ${sleep_seconds}s (${attempts_left} attempts left)."
+      sleep "$sleep_seconds"
+      attempt=$(( attempt + 1 ))
+      continue
+    fi
+
+    success=1
+    break
+  done
+
+  rm -f "$tmp_response"
+
+  if (( success == 0 )); then
+    linear__log_error "Linear GraphQL request failed after ${max_attempts} attempts (${cause:-unknown error})."
+    return 1
+  fi
 
   if jq -e '.errors and (.errors | length > 0)' >/dev/null <<<"$response"; then
     jq '.errors' <<<"$response" >&2

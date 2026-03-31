@@ -15,6 +15,7 @@ SELF_REVIEW_STATE_FILE="$STATE_DIR/self-review-state.json"
 SELF_REVIEW_MIN_INTERVAL="${SELF_REVIEW_MIN_INTERVAL:-21600}"
 SELF_REVIEW_MAX_TASKS="${SELF_REVIEW_MAX_TASKS:-3}"
 ENABLE_SELF_TASKING="${ENABLE_SELF_TASKING:-1}"
+SELF_REVIEW_STARTUP_BYPASS_AVAILABLE=1
 
 LINEAR_API_URL="${LINEAR_API_URL:-https://api.linear.app/graphql}"
 LINEAR_PROJECT_NAME="${LINEAR_PROJECT_NAME:-Self writing agent}"
@@ -145,7 +146,17 @@ self_review_ready() {
   local last_run
   now="$(date +%s)"
   last_run="$(self_review_last_run_ts)"
-  (( now - last_run >= SELF_REVIEW_MIN_INTERVAL ))
+  if (( now - last_run >= SELF_REVIEW_MIN_INTERVAL )); then
+    SELF_REVIEW_STARTUP_BYPASS_AVAILABLE=0
+    return 0
+  fi
+
+  if [[ "$SELF_REVIEW_STARTUP_BYPASS_AVAILABLE" == "1" ]]; then
+    SELF_REVIEW_STARTUP_BYPASS_AVAILABLE=0
+    return 0
+  fi
+
+  return 1
 }
 
 record_self_review_run() {
